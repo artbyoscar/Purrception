@@ -26,12 +26,15 @@ def find_image(image_filename, image_dirs):
     for image_dir in image_dirs:
         full_path = os.path.join(image_dir, image_filename)
         if os.path.exists(full_path):
+            print(f"Found image: {full_path}")
             return full_path
         
         base_name = os.path.splitext(image_filename)[0]
         for ext in ['.jpg', '.jpeg', '.png']:
-            if os.path.exists(os.path.join(image_dir, base_name + ext)):
-                return os.path.join(image_dir, base_name + ext)
+            potential_path = os.path.join(image_dir, base_name + ext)
+            if os.path.exists(potential_path):
+                print(f"Found image with different extension: {potential_path}")
+                return potential_path
     
     print(f"Image not found in any directory: {image_filename}")
     return None
@@ -40,15 +43,20 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     image_dirs = [
         os.path.join(keypoint_path, 'images'),
         os.path.join(keypoint_path, 'images', 'images'),
-        os.path.join(boundingbox_path, 'bndbox_image')
+        os.path.join(boundingbox_path, 'bndbox_image'),
+        os.path.join(boundingbox_path, 'bndbox_image', 'bobcat')
     ]
     
+    # Add subdirectories of bndbox_image
     for subdir in os.listdir(os.path.join(boundingbox_path, 'bndbox_image')):
-        image_dirs.append(os.path.join(boundingbox_path, 'bndbox_image', subdir))
+        full_subdir_path = os.path.join(boundingbox_path, 'bndbox_image', subdir)
+        if os.path.isdir(full_subdir_path):
+            image_dirs.append(full_subdir_path)
     
     print("Image directories:")
     for dir in image_dirs:
         print(f"- {dir}")
+        print(f"  Contents: {os.listdir(dir)[:5]}...")  # Print first 5 items
     
     # Load annotations and bobcat data
     annotations_file = os.path.join(keypoint_path, 'annotations.json')
@@ -58,6 +66,8 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     bobcat_file = os.path.join(boundingbox_path, 'bndbox_anno', 'bobcat.json')
     with open(bobcat_file, 'r') as f:
         bobcat_data = json.load(f)
+
+    print(f"Total bobcat annotations in JSON: {sum(len(anns) for anns in bobcat_data.values())}")
 
     # Filter cat images and annotations
     cat_images = []
@@ -120,11 +130,15 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
                                 ],
                                 'category_id': 'bobcat'
                             })
+                        print(f"Added {len(bobcat_anns)} bobcat annotations for {image_filename}")
                 except Exception as e:
                     print(f"Error copying file {src_path}: {str(e)}")
                     split_missing_images.append(image_filename)
             else:
                 split_missing_images.append(image_filename)
+
+        print(f"Processed {len(processed_images)} images for {split_name} set")
+        print(f"Missing {len(split_missing_images)} images for {split_name} set")
 
         # Save annotations
         split_data = {
@@ -168,6 +182,8 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     total_bobcat_annotations = sum(len(split_data['bobcat_annotations']) for split_name in ['train', 'val', 'test'] 
                                    for split_data in [json.load(open(os.path.join(output_path, split_name, f'{split_name}_annotations.json'), 'r'))])
     print(f"Total bobcat bounding box annotations: {total_bobcat_annotations}")
+    print(f"Images found percentage: {(total_processed / len(cat_images)) * 100:.2f}%")
+    print(f"Bobcat annotations per processed image: {total_bobcat_annotations / total_processed:.2f}")
 
 # Usage
 keypoint_path = '/workspace/Purrception/data/raw/animalpose_keypoint'
