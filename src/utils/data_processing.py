@@ -3,6 +3,20 @@ import os
 import random
 import shutil
 from tqdm import tqdm
+from pathlib import Path
+
+def find_image(image_filename, image_dir):
+    # Try exact match
+    if os.path.exists(os.path.join(image_dir, image_filename)):
+        return os.path.join(image_dir, image_filename)
+    
+    # Try matching without extension
+    base_name = os.path.splitext(image_filename)[0]
+    for file in os.listdir(image_dir):
+        if file.startswith(base_name):
+            return os.path.join(image_dir, file)
+    
+    return None
 
 def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
     # Load the COCO format annotations for keypoints
@@ -65,19 +79,22 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     def save_split(split_name, images):
         split_keypoint_annotations = []
         split_boundingbox_annotations = []
+        processed_images = []
         for image in tqdm(images, desc=f"Processing {split_name} set"):
             image_id = image['id']
             image_filename = image['file_name']
-            # Copy image
-            src_path = os.path.join(keypoint_path, 'images', image_filename)
-            dst_path = os.path.join(output_path, split_name, 'images', image_filename)
-            if not os.path.exists(src_path):
-                print(f"Warning: Image file not found: {src_path}")
-                continue
-            try:
-                shutil.copy(src_path, dst_path)
-            except Exception as e:
-                print(f"Error copying file {src_path}: {str(e)}")
+            # Find and copy image
+            src_path = find_image(image_filename, os.path.join(keypoint_path, 'images'))
+            if src_path:
+                dst_path = os.path.join(output_path, split_name, 'images', os.path.basename(src_path))
+                try:
+                    shutil.copy(src_path, dst_path)
+                    processed_images.append(image)
+                except Exception as e:
+                    print(f"Error copying file {src_path}: {str(e)}")
+                    continue
+            else:
+                print(f"Warning: Image file not found: {image_filename}")
                 continue
 
             # Collect annotations
@@ -88,7 +105,7 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
 
         # Save annotations
         split_data = {
-            'images': images,
+            'images': processed_images,
             'keypoint_annotations': split_keypoint_annotations,
             'boundingbox_annotations': split_boundingbox_annotations,
             'categories': keypoint_data.get('categories', [])
@@ -96,12 +113,14 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
         with open(os.path.join(output_path, split_name, f'{split_name}_annotations.json'), 'w') as f:
             json.dump(split_data, f)
 
-    # Save splits
-    save_split('train', train_images)
-    save_split('val', val_images)
-    save_split('test', test_images)
+        return len(processed_images)
 
-    print(f"Dataset processed and split into {len(train_images)} train, {len(val_images)} validation, and {len(test_images)} test images.")
+    # Save splits
+    train_count = save_split('train', train_images)
+    val_count = save_split('val', val_images)
+    test_count = save_split('test', test_images)
+
+    print(f"Dataset processed and split into {train_count} train, {val_count} validation, and {test_count} test images.")
 
 # Usage
 keypoint_path = '/workspace/Purrception/data/raw/animalpose_keypoint'
