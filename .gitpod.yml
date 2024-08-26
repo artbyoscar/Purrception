@@ -1,11 +1,18 @@
-image: gitpod/workspace-python-3.10
+image: gitpod/workspace-python-3.12
 
 tasks:
   - init: |
-      pip install tensorflow tensorflow_hub numpy resampy soundfile opencv-python-headless tqdm
+      sudo apt-get update
+      sudo apt-get install -y ffmpeg
+      pip install fastapi python-multipart numpy opencv-python pydub tensorflow tensorflow-hub transformers uvicorn librosa
       mkdir -p /workspace/data
-  - command: python process_dataset.py
+  - command: python main.py
 
 ports:
-  - port: 8080
+  - port: 8000
     onOpen: open-preview
+
+vscode:
+  extensions:
+    - ms-python.python
+    - ms-toolsai.jupyter

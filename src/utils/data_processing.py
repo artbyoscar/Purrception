@@ -43,7 +43,6 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path,
     """Process and split the animal pose dataset."""
     image_dirs = [
         os.path.join(keypoint_path, 'images'),
-        os.path.join(boundingbox_path, 'bndbox_image'),
         os.path.join(boundingbox_path, 'bndbox_image', 'bobcat'),
         os.path.join(boundingbox_path, 'bndbox_image', 'bear')
     ]
@@ -65,7 +64,7 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path,
     bear_data = json.load(open(bear_anno_path)) if os.path.exists(bear_anno_path) else {}
 
     # Process images
-    cat_images = list(keypoint_data['images'].values())
+    cat_images = [{'id': image_id, 'file_name': filename} for image_id, filename in keypoint_data['images'].items()] # Create a list of dictionaries
     random.shuffle(cat_images)
 
     # Split dataset
@@ -90,20 +89,18 @@ def process_split(split, images, keypoint_data, bobcat_data, bear_data, image_di
     
     annotations = {'images': [], 'annotations': [], 'bobcat_annotations': [], 'bear_annotations': []}
     
-    for image_filename in tqdm(images, desc=f"Processing {split}"):  # Iterate through filenames directly
+    for image in tqdm(images, desc=f"Processing {split}"):
+        image_filename = image['file_name']
         print(f"Looking for image: {image_filename}")
         src_image_path = find_image(image_filename, image_dirs)
         if src_image_path:
             dst_image_path = os.path.join(split_path, 'images', os.path.basename(src_image_path))
             shutil.copy(src_image_path, dst_image_path)
-            # Add image data to annotations
-            image_data = next((img for img in keypoint_data['images'] if img['file_name'] == image_filename), None)
-            if image_data:
-                annotations['images'].append(image_data)
+            annotations['images'].append(image)
             
             # Add keypoint annotations
             for ann in keypoint_data['annotations']:
-                if image_data and ann['image_id'] == image_data['id']:
+                if ann['image_id'] == image['id']:
                     bbox = generate_bounding_box_from_keypoints(ann['keypoints'])
                     annotations['annotations'].append({**ann, 'bbox': bbox})
             
@@ -113,17 +110,18 @@ def process_split(split, images, keypoint_data, bobcat_data, bear_data, image_di
                 f"img-{image_filename.lower().split('.')[0]}"
             ]
             for key in key_variations:
-                if key in bobcat_data:
-                    for bbox in bobcat_data[key]:
+                # Convert both key and dictionary keys to lowercase for comparison
+                if key in [k.lower() for k in bobcat_data.keys()]: 
+                    for bbox in bobcat_data[key]:  # Access using the original key from bobcat_data
                         annotations['bobcat_annotations'].append({
-                            'image_id': image_data['id'] if image_data else None,  # Use image_data['id'] if available
+                            'image_id': image['id'],
                             'bbox': [bbox['xmin'], bbox['ymin'], bbox['xmax'] - bbox['xmin'], bbox['ymax'] - bbox['ymin']],
                             'category_id': 'bobcat'
                         })
-                if key in bear_data:
-                    for bbox in bear_data[key]:
+                if key in [k.lower() for k in bear_data.keys()]:  # Convert both key and dictionary keys to lowercase for comparison
+                    for bbox in bear_data[key]:  # Access using the original key from bear_data
                         annotations['bear_annotations'].append({
-                            'image_id': image_data['id'] if image_data else None,  # Use image_data['id'] if available
+                            'image_id': image['id'],
                             'bbox': [bbox['xmin'], bbox['ymin'], bbox['xmax'] - bbox['xmin'], bbox['ymax'] - bbox['ymin']],
                             'category_id': 'bear'
                         })
