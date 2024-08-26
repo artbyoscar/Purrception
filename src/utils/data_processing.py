@@ -4,6 +4,24 @@ import random
 import shutil
 from tqdm import tqdm
 
+def generate_bounding_box_from_keypoints(keypoints, padding=0.1):
+    x_coords = keypoints[0::3]
+    y_coords = keypoints[1::3]
+    
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    
+    width = x_max - x_min
+    height = y_max - y_min
+    
+    # Add padding
+    x_min -= width * padding
+    x_max += width * padding
+    y_min -= height * padding
+    y_max += height * padding
+    
+    return [x_min, y_min, x_max - x_min, y_max - y_min]
+
 def find_image(image_filename, image_dir):
     # Try exact match
     if os.path.exists(os.path.join(image_dir, image_filename)):
@@ -31,29 +49,14 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     print("Keypoint data structure:")
     print(json.dumps(keypoint_data, indent=2)[:500])
 
-    # Load the COCO format annotations for bounding boxes
-    boundingbox_files = [f for f in os.listdir(os.path.join(boundingbox_path, 'bndbox_anno')) if f.endswith('.json')]
-    boundingbox_data = []
-    for file in boundingbox_files:
-        with open(os.path.join(boundingbox_path, 'bndbox_anno', file), 'r') as f:
-            data = json.load(f)
-            for image_filename, bboxes in data.items():
-                for bbox in bboxes:
-                    boundingbox_data.append({
-                        'image_id': image_filename,  # Use filename as image_id
-                        'category_id': file.split('.')[0],  # Use filename (without extension) as category
-                        'bbox': [
-                            bbox['bndbox']['xmin'],
-                            bbox['bndbox']['ymin'],
-                            bbox['bndbox']['xmax'] - bbox['bndbox']['xmin'],
-                            bbox['bndbox']['ymax'] - bbox['bndbox']['ymin']
-                        ]
-                    })
+    # Load bobcat bounding box data
+    bobcat_file = os.path.join(boundingbox_path, 'bndbox_anno', 'bobcat.json')
+    with open(bobcat_file, 'r') as f:
+        bobcat_data = json.load(f)
 
     # Filter cat images and annotations
     cat_images = []
     cat_keypoint_annotations = []
-    cat_boundingbox_annotations = []
 
     # Assuming all images in the keypoint data are cats
     for image_id, image_filename in keypoint_data['images'].items():
@@ -62,8 +65,6 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     # Filter cat annotations
     if 'annotations' in keypoint_data:
         cat_keypoint_annotations = keypoint_data['annotations']
-    
-    cat_boundingbox_annotations = [ann for ann in boundingbox_data if ann['category_id'].lower() == 'cat']
 
     # Create output directories
     os.makedirs(os.path.join(output_path, 'train', 'images'), exist_ok=True)
@@ -85,7 +86,7 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     # Function to save images and annotations
     def save_split(split_name, images):
         split_keypoint_annotations = []
-        split_boundingbox_annotations = []
+        split_bobcat_annotations = []
         processed_images = []
         for image in tqdm(images, desc=f"Processing {split_name} set"):
             image_id = image['id']
@@ -107,16 +108,33 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
 
             # Collect annotations
             image_keypoint_anns = [ann for ann in cat_keypoint_annotations if ann['image_id'] == image_id]
-            image_boundingbox_anns = [ann for ann in cat_boundingbox_annotations if ann['image_id'] == image_filename]
+            for ann in image_keypoint_anns:
+                # Generate bounding box from keypoints
+                bbox = generate_bounding_box_from_keypoints(ann['keypoints'])
+                ann['bbox'] = bbox
             split_keypoint_annotations.extend(image_keypoint_anns)
-            split_boundingbox_annotations.extend(image_boundingbox_anns)
+
+            # Add bobcat annotations if available
+            if image_filename in bobcat_data:
+                bobcat_anns = bobcat_data[image_filename]
+                for bbox in bobcat_anns:
+                    split_bobcat_annotations.append({
+                        'image_id': image_id,
+                        'bbox': [
+                            bbox['bndbox']['xmin'],
+                            bbox['bndbox']['ymin'],
+                            bbox['bndbox']['xmax'] - bbox['bndbox']['xmin'],
+                            bbox['bndbox']['ymax'] - bbox['bndbox']['ymin']
+                        ],
+                        'category_id': 'bobcat'
+                    })
 
         # Save annotations
         split_data = {
             'images': processed_images,
             'keypoint_annotations': split_keypoint_annotations,
-            'boundingbox_annotations': split_boundingbox_annotations,
-            'categories': keypoint_data.get('categories', [])
+            'bobcat_annotations': split_bobcat_annotations,
+            'categories': keypoint_data.get('categories', []) + [{'id': 'bobcat', 'name': 'bobcat'}]
         }
         with open(os.path.join(output_path, split_name, f'{split_name}_annotations.json'), 'w') as f:
             json.dump(split_data, f)
@@ -143,7 +161,10 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     print(f"Total images in annotations: {len(cat_images)}")
     print(f"Total processed images: {train_count + val_count + test_count}")
     print(f"Total keypoint annotations: {len(cat_keypoint_annotations)}")
-    print(f"Total bounding box annotations: {len(cat_boundingbox_annotations)}")
+    
+    # Add statistics for bobcat annotations
+    total_bobcat_annotations = sum(len(split_data['bobcat_annotations']) for split_data in ['train', 'val', 'test'])
+    print(f"Total bobcat bounding box annotations: {total_bobcat_annotations}")
 
 # Usage
 keypoint_path = '/workspace/Purrception/data/raw/animalpose_keypoint'
