@@ -26,73 +26,71 @@ def generate_bounding_box_from_keypoints(keypoints, padding=0.1):
 def find_image(image_filename, image_dirs):
     """Finds the full path of an image given its filename and possible directories."""
     for image_dir in image_dirs:
-        # Check for exact match
-        full_path = os.path.join(image_dir, image_filename)
-        if os.path.exists(full_path):
-            return full_path
-        
-        # Check for "Img-" prefix (for bobcat images)
-        if not image_filename.startswith('Img-'):
-            bobcat_filename = f"Img-{image_filename}"
-            full_path = os.path.join(image_dir, bobcat_filename)
-            if os.path.exists(full_path):
-                return full_path
-        
-        # Check for different extensions
-        base_name = os.path.splitext(image_filename)[0]
-        for ext in ['.jpg', '.jpeg', '.png']:
-            potential_path = os.path.join(image_dir, base_name + ext)
-            if os.path.exists(potential_path):
-                return potential_path
-    
-    print(f"Image not found in any directory: {image_filename}")
+        potential_names = [image_filename, f"Img-{image_filename}"]
+        for name in potential_names:
+            for ext in ['.jpg', '.jpeg', '.png']:
+                full_path = os.path.join(image_dir, name.split('.')[0] + ext)
+                if os.path.exists(full_path):
+                    return full_path
+    print(f"Warning: Image not found: {image_filename}")
     return None
 
 def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, 
                                  train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
-    """Processes the animal pose dataset and splits it into train, validation, and test sets.
-    
-    Args:
-        keypoint_path (str): Path to the directory containing keypoint annotations.
-        boundingbox_path (str): Path to the directory containing bounding box annotations.
-        output_path (str): Path to the directory where the processed data will be saved.
-        train_ratio (float): Ratio of images for training set.
-        val_ratio (float): Ratio of images for validation set.
-        test_ratio (float): Ratio of images for test set.
-    """
+    """Processes the animal pose dataset and splits it into train, validation, and test sets."""
     image_dirs = [
         os.path.join(keypoint_path, 'images'),
-        os.path.join(boundingbox_path, 'bndbox_image'),
-        os.path.join(boundingbox_path, 'bndbox_image', 'bobcat'), 
-        os.path.join(boundingbox_path, 'bndbox_image', 'bear')
+        os.path.join(boundingbox_path, 'bndbox_image')
     ]
+
+    # Add all subdirectories of bndbox_image dynamically
+    for root, dirs, files in os.walk(boundingbox_path):
+        for dir in dirs:
+            if 'bndbox_image' in dir or dir in ['bobcat', 'bear']:
+                image_dirs.append(os.path.join(root, dir))
+                print(f"Added image directory: {os.path.join(root, dir)}")
     
-    # Add subdirectories of bndbox_image
-    for subdir in os.listdir(os.path.join(boundingbox_path, 'bndbox_image')):
-        full_subdir_path = os.path.join(boundingbox_path, 'bndbox_image', subdir)
-        if os.path.isdir(full_subdir_path):
-            image_dirs.append(full_subdir_path)
-    
-    print("Image directories:")
+    print("Verifying image directories:")
     for dir in image_dirs:
-        print(f"- {dir}")
-        if os.path.exists(dir):
-            print(f"  Contents: {os.listdir(dir)[:5]}...")  # Print first 5 items
-        else:
-            print(f"  (Directory does not exist)")
+        print(f"- {dir} {'(exists)' if os.path.exists(dir) else '(does not exist)'}")
+
+    # Verify annotation file paths
+    bobcat_anno_path = os.path.join(boundingbox_path, 'bndbox_anno', 'bobcat.json')
+    bear_anno_path = os.path.join(boundingbox_path, 'bndbox_anno', 'bear.json')
+    
+    print("\nVerifying annotation files:")
+    for path in [bobcat_anno_path, bear_anno_path]:
+        print(f"{os.path.basename(path)} annotations: {'exists' if os.path.exists(path) else 'does not exist'}")
 
     # Load annotations
-    with open(os.path.join(keypoint_path, 'annotations.json'), 'r') as f:
-        keypoint_data = json.load(f)
+    try:
+        with open(os.path.join(keypoint_path, 'annotations.json'), 'r') as f:
+            keypoint_data = json.load(f)
+        print("Successfully loaded keypoint annotations")
+    except Exception as e:
+        print(f"Error loading keypoint annotations: {str(e)}")
 
-    with open(os.path.join(boundingbox_path, 'bndbox_anno', 'bobcat.json'), 'r') as f:
-        bobcat_data = json.load(f)
+    try:
+        with open(bobcat_anno_path, 'r') as f:
+            bobcat_data = json.load(f)
+        print(f"Successfully loaded bobcat annotations. Total entries: {len(bobcat_data)}")
+    except Exception as e:
+        print(f"Error loading bobcat annotations: {str(e)}")
+        bobcat_data = {}
 
-    with open(os.path.join(boundingbox_path, 'bndbox_anno', 'bear.json'), 'r') as f:
-        bear_data = json.load(f)
+    try:
+        with open(bear_anno_path, 'r') as f:
+            bear_data = json.load(f)
+        print(f"Successfully loaded bear annotations. Total entries: {len(bear_data)}")
+    except Exception as e:
+        print(f"Error loading bear annotations: {str(e)}")
+        bear_data = {}
 
-    print(f"Total bobcat annotations in JSON: {sum(len(anns) for anns in bobcat_data.values())}")
-    print(f"Total bear annotations in JSON: {sum(len(anns) for anns in bear_data.values())}")
+    # Print sample data
+    print("\nSample bobcat data:")
+    print(list(bobcat_data.items())[:2])
+    print("\nSample bear data:")
+    print(list(bear_data.items())[:2])
 
     # Filter cat images and annotations
     cat_images = [{'id': image_id, 'file_name': image_filename} 
@@ -123,6 +121,8 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path,
         for image in tqdm(images, desc=f"Processing {split_name} set"):
             image_id = image['id']
             image_filename = image['file_name']
+            key_filename = image_filename.lower()
+
             src_path = find_image(image_filename, image_dirs)
             if src_path:
                 dst_path = os.path.join(output_path, split_name, 'images', os.path.basename(src_path))
@@ -138,38 +138,40 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path,
                     split_keypoint_annotations.extend(image_keypoint_anns)
 
                     # Add bobcat annotations 
-                    for filename in [image_filename, f"Img-{image_filename}"]: # Check both naming conventions
-                        key_filename = filename.replace("Img-", "") # Remove "Img-" for comparison with bobcat_data
-                        if key_filename in bobcat_data: 
-                            bobcat_anns = bobcat_data[key_filename] 
+                    for key in [key_filename, f"img-{key_filename}", key_filename.split('.')[0]]:
+                        if key in bobcat_data:
+                            bobcat_anns = bobcat_data[key]
                             for bbox in bobcat_anns:
                                 split_bobcat_annotations.append({
                                     'image_id': image_id,
                                     'bbox': [
-                                        bbox['bndbox']['xmin'],
-                                        bbox['bndbox']['ymin'],
-                                        bbox['bndbox']['xmax'] - bbox['bndbox']['xmin'],
-                                        bbox['bndbox']['ymax'] - bbox['bndbox']['ymin']
+                                        bbox['xmin'], 
+                                        bbox['ymin'],
+                                        bbox['xmax'] - bbox['xmin'],
+                                        bbox['ymax'] - bbox['ymin']
                                     ],
                                     'category_id': 'bobcat'
                                 })
-                            print(f"Added {len(bobcat_anns)} bobcat annotations for {filename}") # Log successful additions
+                            print(f"Added {len(bobcat_anns)} bobcat annotations for {key}")
+                            break
 
                     # Add bear annotations
-                    key_filename = image_filename.replace("Img-", "")  # Remove "Img-" for comparison with bear_data
-                    if key_filename in bear_data:
-                        bear_anns = bear_data[key_filename]
-                        for bbox in bear_anns:
-                            split_bear_annotations.append({
-                                'image_id': image_id,
-                                'bbox': [
-                                    bbox['bndbox']['xmin'],
-                                    bbox['bndbox']['ymin'],
-                                    bbox['bndbox']['xmax'] - bbox['bndbox']['xmin'],
-                                    bbox['bndbox']['ymax'] - bbox['bndbox']['ymin']
-                                ],
-                                'category_id': 'bear'
-                            })
+                    for key in [key_filename, f"img-{key_filename}", key_filename.split('.')[0]]:
+                        if key in bear_data:
+                            bear_anns = bear_data[key]
+                            for bbox in bear_anns:
+                                split_bear_annotations.append({
+                                    'image_id': image_id,
+                                    'bbox': [
+                                        bbox['xmin'], 
+                                        bbox['ymin'],
+                                        bbox['xmax'] - bbox['xmin'],
+                                        bbox['ymax'] - bbox['ymin']
+                                    ],
+                                    'category_id': 'bear'
+                                })
+                            print(f"Added {len(bear_anns)} bear annotations for {key}")
+                            break
 
                 except Exception as e:
                     print(f"Error copying file {src_path}: {str(e)}")
@@ -179,6 +181,8 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path,
 
         print(f"Processed {len(processed_images)} images for {split_name} set")
         print(f"Missing {len(split_missing_images)} images for {split_name} set")
+        print(f"Total bobcat annotations for {split_name}: {len(split_bobcat_annotations)}")
+        print(f"Total bear annotations for {split_name}: {len(split_bear_annotations)}")
 
         # Save annotations
         split_data = {
