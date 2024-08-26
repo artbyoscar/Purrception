@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import time
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.utils import to_categorical
@@ -20,6 +21,7 @@ sys.path.append(project_root)
 from src.utils.model import create_cnn_model, create_resnet_model
 
 def load_data(data_dir):
+    print("Loading data...")
     X_train = np.load(os.path.join(data_dir, 'train', 'train_spectrograms.npy'))
     y_train = np.load(os.path.join(data_dir, 'train', 'train_labels.npy'), allow_pickle=True)
     X_val = np.load(os.path.join(data_dir, 'val', 'val_spectrograms.npy'))
@@ -34,9 +36,11 @@ def load_data(data_dir):
     X_val = X_val[:min_val_samples]
     y_val = y_val[:min_val_samples]
     
+    print("Data loaded.")
     return X_train, y_train, X_val, y_val
 
 def preprocess_data(X, y):
+    print("Preprocessing data...")
     # Add channel dimension to X
     X = X[..., np.newaxis]
     
@@ -53,6 +57,7 @@ def preprocess_data(X, y):
     num_classes = len(np.unique(y))
     y = to_categorical(y, num_classes=num_classes)
     
+    print("Data preprocessing completed.")
     return X, y
 
 def augment_audio(spectrogram):
@@ -67,6 +72,9 @@ def augment_audio(spectrogram):
     return pitched
 
 def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=10):
+    print(f"Starting model creation for {model_type}...")
+    start_time = time.time()
+    
     # Get the input shape and number of classes
     input_shape = X_train.shape[1:]
     num_classes = y_train.shape[1]
@@ -81,11 +89,17 @@ def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=10):
         optimizer = Adam(learning_rate=0.0001)
         batch_size = 16
 
+    print(f"Model created. Time taken: {time.time() - start_time:.2f} seconds")
+
+    print("Compiling model...")
+    compile_start = time.time()
     # Compile the model
     model.compile(optimizer=optimizer,
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
+    print(f"Model compiled. Time taken: {time.time() - compile_start:.2f} seconds")
 
+    print("Calculating class weights...")
     # Calculate class weights
     class_weights = compute_class_weight('balanced', classes=np.unique(np.argmax(y_train, axis=1)), y=np.argmax(y_train, axis=1))
     class_weight_dict = dict(enumerate(class_weights))
@@ -93,6 +107,7 @@ def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=10):
     # Early stopping
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
+    print(f"Starting training for {epochs} epochs...")
     # Train the model
     history = model.fit(X_train, y_train, 
                         epochs=epochs, 
@@ -100,18 +115,9 @@ def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=10):
                         validation_data=(X_val, y_val),
                         class_weight=class_weight_dict,
                         callbacks=[early_stopping],
-                        verbose=0)  # Set verbose to 0 to use tqdm instead
+                        verbose=1)  # Set verbose to 1 for per-epoch progress
 
-    # Use tqdm to show progress
-    for epoch in tqdm(range(epochs), desc="Training"):
-        model.fit(X_train, y_train,
-                  epochs=1,
-                  batch_size=batch_size,
-                  validation_data=(X_val, y_val),
-                  class_weight=class_weight_dict,
-                  callbacks=[early_stopping],
-                  verbose=0)
-
+    print(f"Training completed. Total time: {time.time() - start_time:.2f} seconds")
     return model, history
 
 def cross_validate_model(X, y, model_type='cnn', n_splits=5):
@@ -168,20 +174,24 @@ def main():
     data_dir = os.path.join(project_root, 'data', 'processed')
     
     print("Loading and preprocessing data...")
+    load_start = time.time()
     X_train, y_train, X_val, y_val = load_data(data_dir)
     X_train, y_train = preprocess_data(X_train, y_train)
     X_val, y_val = preprocess_data(X_val, y_val)
+    print(f"Data loaded and preprocessed. Time taken: {time.time() - load_start:.2f} seconds")
     
-    print("Data loaded and preprocessed:")
+    print("Data shapes:")
     print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
     print(f"X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
     
     if not args.skip_smote:
         print("\nApplying SMOTE...")
+        smote_start = time.time()
         smote = SMOTE(random_state=42)
         X_train_resampled, y_train_resampled = smote.fit_resample(X_train.reshape(X_train.shape[0], -1), np.argmax(y_train, axis=1))
         X_train_resampled = X_train_resampled.reshape(-1, *X_train.shape[1:])
         y_train_resampled = to_categorical(y_train_resampled)
+        print(f"SMOTE applied. Time taken: {time.time() - smote_start:.2f} seconds")
         
         print("After SMOTE:")
         print(f"X_train_resampled shape: {X_train_resampled.shape}, y_train_resampled shape: {y_train_resampled.shape}")
@@ -190,7 +200,9 @@ def main():
     
     if not args.skip_cv:
         print("\nPerforming cross-validation...")
+        cv_start = time.time()
         mean_score, std_score = cross_validate_model(X_train_resampled, y_train_resampled, model_type=args.model, n_splits=3)
+        print(f"Cross-validation completed. Time taken: {time.time() - cv_start:.2f} seconds")
         print(f"Cross-validation result: Accuracy = {mean_score:.4f} (+/- {std_score:.4f})")
     
     print("\nTraining final model...")
@@ -199,10 +211,12 @@ def main():
     model_dir = os.path.join(project_root, 'models')
     os.makedirs(model_dir, exist_ok=True)
     model_path = os.path.join(model_dir, f'cat_sound_classifier_{args.model}.h5')
+    print(f"Saving model to {model_path}...")
     model.save(model_path)
     
-    print(f"\nModel ({args.model}) trained and saved successfully to {model_path}")
+    print(f"\nModel ({args.model}) trained and saved successfully.")
 
+    print("Plotting training history...")
     # Plot training history
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 2, 1)
@@ -222,8 +236,9 @@ def main():
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig(os.path.join(model_dir, f'training_history_{args.model}.png'))
-    print(f"Training history plot saved to {os.path.join(model_dir, f'training_history_{args.model}.png')}")
+    history_path = os.path.join(model_dir, f'training_history_{args.model}.png')
+    plt.savefig(history_path)
+    print(f"Training history plot saved to {history_path}")
 
 if __name__ == "__main__":
     main()
