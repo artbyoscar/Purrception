@@ -14,7 +14,15 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     boundingbox_data = []
     for file in boundingbox_files:
         with open(os.path.join(boundingbox_path, 'bndbox_anno', file), 'r') as f:
-            boundingbox_data.extend(json.load(f)['annotations'])
+            data = json.load(f)
+            print(f"Structure of {file}:")
+            print(json.dumps(data, indent=2)[:500])  # Print first 500 characters of the structure
+            if 'annotations' in data:
+                boundingbox_data.extend(data['annotations'])
+            elif isinstance(data, list):
+                boundingbox_data.extend(data)
+            else:
+                print(f"Unexpected structure in {file}")
 
     # Filter cat images and annotations
     cat_images = []
