@@ -3,7 +3,6 @@ import os
 import random
 import shutil
 from tqdm import tqdm
-from pathlib import Path
 
 def find_image(image_filename, image_dir):
     # Try exact match
@@ -12,15 +11,21 @@ def find_image(image_filename, image_dir):
     
     # Try matching without extension
     base_name = os.path.splitext(image_filename)[0]
-    for file in os.listdir(image_dir):
-        if file.startswith(base_name):
-            return os.path.join(image_dir, file)
+    for ext in ['.jpg', '.jpeg']:
+        if os.path.exists(os.path.join(image_dir, base_name + ext)):
+            return os.path.join(image_dir, base_name + ext)
     
     return None
 
 def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
+    image_path = os.path.join(keypoint_path, 'images', 'images')
+    
+    print("Contents of image directory:")
+    print(os.listdir(image_path)[:10])  # Print first 10 files for brevity
+    
     # Load the COCO format annotations for keypoints
-    with open(os.path.join(keypoint_path, 'annotations.json'), 'r') as f:
+    annotations_file = os.path.join(keypoint_path, 'annotations.json')
+    with open(annotations_file, 'r') as f:
         keypoint_data = json.load(f)
 
     print("Keypoint data structure:")
@@ -84,7 +89,7 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
             image_id = image['id']
             image_filename = image['file_name']
             # Find and copy image
-            src_path = find_image(image_filename, os.path.join(keypoint_path, 'images'))
+            src_path = find_image(image_filename, image_path)
             if src_path:
                 dst_path = os.path.join(output_path, split_name, 'images', os.path.basename(src_path))
                 try:
