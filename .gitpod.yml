@@ -1,0 +1,11 @@
+image: gitpod/workspace-python-3.10
+
+tasks:
+  - init: |
+      pip install tensorflow tensorflow_hub numpy resampy soundfile opencv-python-headless tqdm
+      mkdir -p /workspace/data
+  - command: python process_dataset.py
+
+ports:
+  - port: 8080
+    onOpen: open-preview
