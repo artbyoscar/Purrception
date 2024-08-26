@@ -163,7 +163,12 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     print(f"Total keypoint annotations: {len(cat_keypoint_annotations)}")
     
     # Add statistics for bobcat annotations
-    total_bobcat_annotations = sum(len(split_data['bobcat_annotations']) for split_data in ['train', 'val', 'test'])
+    total_bobcat_annotations = 0
+    for split_name in ['train', 'val', 'test']:
+        with open(os.path.join(output_path, split_name, f'{split_name}_annotations.json'), 'r') as f:
+            split_data = json.load(f)
+            total_bobcat_annotations += len(split_data.get('bobcat_annotations', []))
+
     print(f"Total bobcat bounding box annotations: {total_bobcat_annotations}")
 
 # Usage
