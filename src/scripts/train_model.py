@@ -1,17 +1,15 @@
 import os
 import sys
 import argparse
-import time
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
-from sklearn.model_selection import KFold
+from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from imblearn.over_sampling import SMOTE
 import librosa
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # Add the project root to the Python path
@@ -21,13 +19,12 @@ sys.path.append(project_root)
 from src.utils.model import create_cnn_model, create_resnet_model
 
 def load_data(data_dir):
-    print("Loading data...")
     X_train = np.load(os.path.join(data_dir, 'train', 'train_spectrograms.npy'))
     y_train = np.load(os.path.join(data_dir, 'train', 'train_labels.npy'), allow_pickle=True)
     X_val = np.load(os.path.join(data_dir, 'val', 'val_spectrograms.npy'))
     y_val = np.load(os.path.join(data_dir, 'val', 'val_labels.npy'), allow_pickle=True)
     
-    # Ensure X and y have the same number of samples
+    # Ensure X and y have the same number of samples for both train and val sets
     min_train_samples = min(X_train.shape[0], y_train.shape[0])
     min_val_samples = min(X_val.shape[0], y_val.shape[0])
     
@@ -36,11 +33,15 @@ def load_data(data_dir):
     X_val = X_val[:min_val_samples]
     y_val = y_val[:min_val_samples]
     
-    print("Data loaded.")
-    return X_train, y_train, X_val, y_val
+    # Combine train and val data for re-splitting
+    X = np.concatenate((X_train, X_val), axis=0)
+    y = np.concatenate((y_train, y_val), axis=0)
+    
+    print(f"Loaded data shapes: X: {X.shape}, y: {y.shape}")
+    
+    return X, y
 
 def preprocess_data(X, y):
-    print("Preprocessing data...")
     # Add channel dimension to X
     X = X[..., np.newaxis]
     
@@ -57,166 +58,120 @@ def preprocess_data(X, y):
     num_classes = len(np.unique(y))
     y = to_categorical(y, num_classes=num_classes)
     
-    print("Data preprocessing completed.")
     return X, y
 
-def augment_audio(spectrogram):
-    # Time stretching
-    rate = np.random.uniform(0.8, 1.2)
-    stretched = librosa.effects.time_stretch(spectrogram, rate=rate)
+def augment_data(X, y):
+    augmented_X = []
+    augmented_y = []
+    target_shape = X.shape[1:3]  # (128, 216)
     
-    # Pitch shifting
-    n_steps = np.random.randint(-2, 3)
-    pitched = librosa.effects.pitch_shift(stretched, sr=22050, n_steps=n_steps)
+    for i in range(len(X)):
+        # Original sample
+        augmented_X.append(X[i])
+        augmented_y.append(y[i])
+        
+        # Time stretching
+        rate = np.random.uniform(0.8, 1.2)
+        stretched = librosa.effects.time_stretch(X[i, :, :, 0], rate=rate)
+        stretched = librosa.util.fix_length(stretched, size=target_shape[1], axis=1)
+        stretched = np.pad(stretched, ((0, target_shape[0] - stretched.shape[0]), (0, 0)), mode='constant')
+        augmented_X.append(stretched[..., np.newaxis])
+        augmented_y.append(y[i])
+        
+        # Pitch shifting
+        n_steps = np.random.randint(-2, 3)
+        pitched = librosa.effects.pitch_shift(X[i, :, :, 0], sr=22050, n_steps=n_steps)
+        pitched = librosa.util.fix_length(pitched, size=target_shape[1], axis=1)
+        pitched = np.pad(pitched, ((0, target_shape[0] - pitched.shape[0]), (0, 0)), mode='constant')
+        augmented_X.append(pitched[..., np.newaxis])
+        augmented_y.append(y[i])
     
-    return pitched
+    return np.array(augmented_X), np.array(augmented_y)
 
-def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=10):
-    print(f"Starting model creation for {model_type}...")
-    start_time = time.time()
-    
-    # Get the input shape and number of classes
+def train_model(X_train, y_train, X_val, y_val, model_type='cnn', epochs=50):
     input_shape = X_train.shape[1:]
     num_classes = y_train.shape[1]
 
-    # Create the model
     if model_type == 'cnn':
         model = create_cnn_model(input_shape, num_classes)
-        optimizer = Adam(learning_rate=0.001)
-        batch_size = 32
+        learning_rate = 0.001
     else:
         model = create_resnet_model(input_shape, num_classes)
-        optimizer = Adam(learning_rate=0.0001)
-        batch_size = 16
+        learning_rate = 0.0001
 
-    print(f"Model created. Time taken: {time.time() - start_time:.2f} seconds")
-
-    print("Compiling model...")
-    compile_start = time.time()
-    # Compile the model
+    optimizer = Adam(learning_rate=learning_rate)
     model.compile(optimizer=optimizer,
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
-    print(f"Model compiled. Time taken: {time.time() - compile_start:.2f} seconds")
 
-    print("Calculating class weights...")
-    # Calculate class weights
+    # Compute class weights
     class_weights = compute_class_weight('balanced', classes=np.unique(np.argmax(y_train, axis=1)), y=np.argmax(y_train, axis=1))
     class_weight_dict = dict(enumerate(class_weights))
 
-    # Early stopping
+    # Callbacks
     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=0.00001)
 
-    print(f"Starting training for {epochs} epochs...")
     # Train the model
     history = model.fit(X_train, y_train, 
                         epochs=epochs, 
-                        batch_size=batch_size, 
+                        batch_size=32, 
                         validation_data=(X_val, y_val),
                         class_weight=class_weight_dict,
-                        callbacks=[early_stopping],
-                        verbose=1)  # Set verbose to 1 for per-epoch progress
+                        callbacks=[early_stopping, reduce_lr])
 
-    print(f"Training completed. Total time: {time.time() - start_time:.2f} seconds")
     return model, history
-
-def cross_validate_model(X, y, model_type='cnn', n_splits=5):
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    scores = []
-
-    for fold, (train_index, val_index) in enumerate(tqdm(kf.split(X), total=n_splits, desc="Cross-validation")):
-        X_train, X_val = X[train_index], X[val_index]
-        y_train, y_val = y[train_index], y[val_index]
-
-        if model_type == 'cnn':
-            model = create_cnn_model(X_train.shape[1:], y_train.shape[1])
-            optimizer = Adam(learning_rate=0.001)
-            batch_size = 32
-            epochs = 10
-        else:
-            model = create_resnet_model(X_train.shape[1:], y_train.shape[1])
-            optimizer = Adam(learning_rate=0.0001)
-            batch_size = 16
-            epochs = 20
-
-        model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
-
-        # Calculate class weights
-        class_weights = compute_class_weight('balanced', classes=np.unique(np.argmax(y_train, axis=1)), y=np.argmax(y_train, axis=1))
-        class_weight_dict = dict(enumerate(class_weights))
-
-        # Early stopping
-        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-
-        # Train the model
-        model.fit(X_train, y_train, 
-                  epochs=epochs, 
-                  batch_size=batch_size, 
-                  validation_data=(X_val, y_val),
-                  class_weight=class_weight_dict,
-                  callbacks=[early_stopping],
-                  verbose=0)
-
-        # Evaluate the model
-        score = model.evaluate(X_val, y_val, verbose=0)
-        scores.append(score[1])  # Append accuracy
-
-    return np.mean(scores), np.std(scores)
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='cnn', choices=['cnn', 'resnet'], help='Model architecture to use')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train')
-    parser.add_argument('--skip-cv', action='store_true', help='Skip cross-validation')
-    parser.add_argument('--skip-smote', action='store_true', help='Skip SMOTE oversampling')
+    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs to train')
     args = parser.parse_args()
 
     data_dir = os.path.join(project_root, 'data', 'processed')
     
-    print("Loading and preprocessing data...")
-    load_start = time.time()
-    X_train, y_train, X_val, y_val = load_data(data_dir)
-    X_train, y_train = preprocess_data(X_train, y_train)
-    X_val, y_val = preprocess_data(X_val, y_val)
-    print(f"Data loaded and preprocessed. Time taken: {time.time() - load_start:.2f} seconds")
+    # Load data
+    print("Loading data...")
+    X, y = load_data(data_dir)
+    print(f"Loaded data shapes: X: {X.shape}, y: {y.shape}")
     
-    print("Data shapes:")
-    print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
-    print(f"X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
+    # Preprocess data
+    print("Preprocessing data...")
+    X, y = preprocess_data(X, y)
+    print(f"Preprocessed data shapes: X: {X.shape}, y: {y.shape}")
     
-    if not args.skip_smote:
-        print("\nApplying SMOTE...")
-        smote_start = time.time()
-        smote = SMOTE(random_state=42)
-        X_train_resampled, y_train_resampled = smote.fit_resample(X_train.reshape(X_train.shape[0], -1), np.argmax(y_train, axis=1))
-        X_train_resampled = X_train_resampled.reshape(-1, *X_train.shape[1:])
-        y_train_resampled = to_categorical(y_train_resampled)
-        print(f"SMOTE applied. Time taken: {time.time() - smote_start:.2f} seconds")
-        
-        print("After SMOTE:")
-        print(f"X_train_resampled shape: {X_train_resampled.shape}, y_train_resampled shape: {y_train_resampled.shape}")
-    else:
-        X_train_resampled, y_train_resampled = X_train, y_train
+    # Split data
+    print("Splitting data...")
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=np.argmax(y, axis=1), random_state=42)
+    print(f"Train set shapes: X_train: {X_train.shape}, y_train: {y_train.shape}")
+    print(f"Validation set shapes: X_val: {X_val.shape}, y_val: {y_val.shape}")
     
-    if not args.skip_cv:
-        print("\nPerforming cross-validation...")
-        cv_start = time.time()
-        mean_score, std_score = cross_validate_model(X_train_resampled, y_train_resampled, model_type=args.model, n_splits=3)
-        print(f"Cross-validation completed. Time taken: {time.time() - cv_start:.2f} seconds")
-        print(f"Cross-validation result: Accuracy = {mean_score:.4f} (+/- {std_score:.4f})")
+    # Augment data
+    print("Augmenting training data...")
+    X_train_aug, y_train_aug = augment_data(X_train, y_train)
+    print(f"Augmented train set shapes: X_train_aug: {X_train_aug.shape}, y_train_aug: {y_train_aug.shape}")
     
-    print("\nTraining final model...")
+    # Apply SMOTE
+    print("Applying SMOTE...")
+    smote = SMOTE(random_state=42)
+    X_train_flat = X_train_aug.reshape(X_train_aug.shape[0], -1)
+    y_train_flat = np.argmax(y_train_aug, axis=1)
+    X_train_resampled, y_train_resampled = smote.fit_resample(X_train_flat, y_train_flat)
+    X_train_resampled = X_train_resampled.reshape(-1, *X_train_aug.shape[1:])
+    y_train_resampled = to_categorical(y_train_resampled)
+    print(f"Resampled train set shapes: X_train_resampled: {X_train_resampled.shape}, y_train_resampled: {y_train_resampled.shape}")
+    
+    # Train final model
+    print(f"Training {args.model} model for {args.epochs} epochs...")
     model, history = train_model(X_train_resampled, y_train_resampled, X_val, y_val, model_type=args.model, epochs=args.epochs)
     
+    # Save model
     model_dir = os.path.join(project_root, 'models')
     os.makedirs(model_dir, exist_ok=True)
     model_path = os.path.join(model_dir, f'cat_sound_classifier_{args.model}.h5')
-    print(f"Saving model to {model_path}...")
     model.save(model_path)
+    print(f"Model saved to {model_path}")
     
-    print(f"\nModel ({args.model}) trained and saved successfully.")
-
-    print("Plotting training history...")
     # Plot training history
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 2, 1)

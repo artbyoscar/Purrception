@@ -2,7 +2,7 @@ import os
 import sys
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -45,7 +45,11 @@ def evaluate_model(model, X_test, y_test):
 
     # Print classification report
     print("\nClassification Report:")
-    print(classification_report(y_true_classes, y_pred_classes, zero_division=0))
+    print(classification_report(y_true_classes, y_pred_classes))
+
+    # Calculate and print ROC AUC score
+    roc_auc = roc_auc_score(y_test, y_pred, average='weighted', multi_class='ovr')
+    print(f"\nWeighted ROC AUC Score: {roc_auc:.4f}")
 
     # Create confusion matrix
     cm = confusion_matrix(y_true_classes, y_pred_classes)
@@ -61,11 +65,19 @@ def evaluate_model(model, X_test, y_test):
     results_dir = os.path.join(project_root, 'results')
     os.makedirs(results_dir, exist_ok=True)
     
-    plt.savefig(os.path.join(results_dir, 'confusion_matrix.png'))
+    confusion_matrix_path = os.path.join(results_dir, 'confusion_matrix.png')
+    plt.savefig(confusion_matrix_path)
     plt.close()
 
     print(f"\nConfusion Matrix:")
     print(cm)
+    print(f"\nConfusion matrix saved to {confusion_matrix_path}")
+
+    # Calculate and print overall accuracy
+    accuracy = np.sum(y_pred_classes == y_true_classes) / len(y_true_classes)
+    print(f"\nOverall Accuracy: {accuracy:.4f}")
+
+    return y_pred, y_true_classes
 
 def print_model_summary(model):
     print("\nModel Summary:")
@@ -80,23 +92,43 @@ def print_model_summary(model):
         else:
             output_shape = "Unknown"
         print(f"Layer {i}: {layer.__class__.__name__}, Output Shape: {output_shape}")
-        
+
+def plot_sample_predictions(X_test, y_true, y_pred, num_samples=5):
+    indices = np.random.choice(len(X_test), num_samples, replace=False)
+    
+    plt.figure(figsize=(15, 3*num_samples))
+    for i, idx in enumerate(indices):
+        plt.subplot(num_samples, 1, i+1)
+        plt.imshow(X_test[idx, :, :, 0], aspect='auto', cmap='viridis')
+        plt.title(f"True: {y_true[idx]}, Predicted: {np.argmax(y_pred[idx])}")
+        plt.colorbar()
+    
+    results_dir = os.path.join(project_root, 'results')
+    sample_predictions_path = os.path.join(results_dir, 'sample_predictions.png')
+    plt.tight_layout()
+    plt.savefig(sample_predictions_path)
+    plt.close()
+    print(f"\nSample predictions plot saved to {sample_predictions_path}")
+
 def main():
     # Load and preprocess test data
     data_dir = os.path.join(project_root, 'data', 'processed')
     X_test, y_test = load_and_preprocess_data(data_dir)
 
     # Load the trained model
-    model_path = os.path.join(project_root, 'models', 'cat_sound_classifier.h5')
+    model_path = os.path.join(project_root, 'models', 'cat_sound_classifier_cnn.h5')
     model = load_model(model_path)
 
     # Print model summary
     print_model_summary(model)
 
     # Evaluate the model
-    evaluate_model(model, X_test, y_test)
+    y_pred, y_true = evaluate_model(model, X_test, y_test)
 
-    print("Evaluation completed. Confusion matrix saved in the 'results' directory.")
+    # Plot sample predictions
+    plot_sample_predictions(X_test, y_true, y_pred)
+
+    print("Evaluation completed. Results saved in the 'results' directory.")
 
 if __name__ == "__main__":
     main()
