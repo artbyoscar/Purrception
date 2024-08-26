@@ -80,6 +80,8 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     val_images = cat_images[train_split:val_split]
     test_images = cat_images[val_split:]
 
+    missing_images = []
+
     # Function to save images and annotations
     def save_split(split_name, images):
         split_keypoint_annotations = []
@@ -100,6 +102,7 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
                     continue
             else:
                 print(f"Warning: Image file not found: {image_filename}")
+                missing_images.append(image_filename)
                 continue
 
             # Collect annotations
@@ -126,6 +129,21 @@ def process_animal_pose_dataset(keypoint_path, boundingbox_path, output_path, tr
     test_count = save_split('test', test_images)
 
     print(f"Dataset processed and split into {train_count} train, {val_count} validation, and {test_count} test images.")
+    
+    # Save list of missing images
+    with open(os.path.join(output_path, 'missing_images.txt'), 'w') as f:
+        for missing in missing_images:
+            f.write(f"{missing}\n")
+    
+    print(f"Total missing images: {len(missing_images)}")
+    print(f"List of missing images saved to {os.path.join(output_path, 'missing_images.txt')}")
+
+    # Print some statistics
+    print("\nDataset Statistics:")
+    print(f"Total images in annotations: {len(cat_images)}")
+    print(f"Total processed images: {train_count + val_count + test_count}")
+    print(f"Total keypoint annotations: {len(cat_keypoint_annotations)}")
+    print(f"Total bounding box annotations: {len(cat_boundingbox_annotations)}")
 
 # Usage
 keypoint_path = '/workspace/Purrception/data/raw/animalpose_keypoint'
