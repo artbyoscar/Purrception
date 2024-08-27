@@ -1,14 +1,15 @@
 import os
 import sys
-import argparse
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, GlobalAveragePooling1D, Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
-from sklearn.model_selection import train_test_split, KFold
+from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, TensorBoard
+from tensorflow.keras.utils import to_categorical
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import classification_report, confusion_matrix
 import librosa
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -23,9 +24,6 @@ def load_data(data_dir):
     X_val = np.load(os.path.join(data_dir, 'val', 'val_spectrograms.npy'))
     y_val = np.load(os.path.join(data_dir, 'val', 'val_labels.npy'), allow_pickle=True)
     
-    print(f"Train data shapes: X_train: {X_train.shape}, y_train: {y_train.shape}")
-    print(f"Validation data shapes: X_val: {X_val.shape}, y_val: {y_val.shape}")
-    
     X = np.concatenate((X_train, X_val), axis=0)
     y = np.concatenate((y_train, y_val), axis=0)
     
@@ -33,165 +31,154 @@ def load_data(data_dir):
     print(f"X min: {X.min()}, X max: {X.max()}")
     print(f"Unique labels: {np.unique(y)}")
     
-    return X, y
-
-def check_data_consistency(X, y):
+    # Check for consistency
     if len(X) != len(y):
         print(f"Warning: Number of samples in X ({len(X)}) does not match number of labels in y ({len(y)})")
         # Truncate y to match X
         y = y[:len(X)]
         print(f"Truncated y to match X. New shapes: X: {X.shape}, y: {y.shape}")
+    
     return X, y
 
-def extract_features(X):
-    features = []
-    for spectrogram in X:
-        # Ensure non-negative values by taking the magnitude
-        S = np.abs(spectrogram)
+def augment_data(X, y):
+    augmented_X = []
+    augmented_y = []
+    for i in range(len(X)):
+        augmented_X.append(X[i])
+        augmented_y.append(y[i])
         
-        # Extract features, with error handling
-        try:
-            mfccs = librosa.feature.mfcc(S=S, n_mfcc=13)
-            spectral_centroid = librosa.feature.spectral_centroid(S=S)
-            chroma = librosa.feature.chroma_stft(S=S)
-            zcr = librosa.feature.zero_crossing_rate(y=S.mean(axis=0))
-            
-            # Combine features
-            feature = np.concatenate([
-                mfccs.mean(axis=1),
-                spectral_centroid.mean(axis=1),
-                chroma.mean(axis=1),
-                zcr.mean(axis=1)
-            ])
-            
-            features.append(feature)
-        except Exception as e:
-            print(f"Error extracting features: {e}")
-            print(f"Spectrogram shape: {spectrogram.shape}")
-            print(f"Spectrogram min: {spectrogram.min()}, max: {spectrogram.max()}")
-            # Append a zero vector if feature extraction fails
-            features.append(np.zeros(13 + 1 + 12 + 1))  # MFCC + centroid + chroma + ZCR
+        # Time stretching
+        stretched = librosa.effects.time_stretch(X[i].T, rate=0.8).T
+        augmented_X.append(stretched)
+        augmented_y.append(y[i])
+        
+        # Pitch shifting
+        shifted = librosa.effects.pitch_shift(X[i].T, sr=22050, n_steps=2).T
+        augmented_X.append(shifted)
+        augmented_y.append(y[i])
     
-    return np.array(features)
+    return np.array(augmented_X), np.array(augmented_y)
 
-def preprocess_data(X, y):
-    # Convert string labels to integers
-    unique_labels = np.unique(y)
-    label_to_int = {label: i for i, label in enumerate(unique_labels)}
-    y = np.array([label_to_int[label] for label in y])
-    
-    # Convert labels to categorical
-    num_classes = len(unique_labels)
-    y = to_categorical(y, num_classes=num_classes)
-    
-    # Normalize features
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-    
-    return X, y, unique_labels
-
-def create_1d_cnn_model(input_shape, num_classes):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=input_shape),
-        tf.keras.layers.MaxPooling1D(2),
-        tf.keras.layers.Conv1D(64, 3, activation='relu'),
-        tf.keras.layers.MaxPooling1D(2),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(num_classes, activation='softmax')
+def create_model(input_shape, num_classes):
+    model = Sequential([
+        Conv1D(32, 3, activation='relu', input_shape=input_shape),
+        BatchNormalization(),
+        MaxPooling1D(2),
+        Conv1D(64, 3, activation='relu'),
+        BatchNormalization(),
+        MaxPooling1D(2),
+        Conv1D(128, 3, activation='relu'),
+        BatchNormalization(),
+        GlobalAveragePooling1D(),
+        Dense(64, activation='relu'),
+        Dropout(0.5),
+        Dense(num_classes, activation='softmax')
     ])
     return model
 
+def focal_loss(gamma=2., alpha=.25):
+    def focal_loss_fixed(y_true, y_pred):
+        pt_1 = tf.where(tf.equal(y_true, 1), y_pred, tf.ones_like(y_pred))
+        return -tf.reduce_sum(alpha * tf.pow(1. - pt_1, gamma) * tf.math.log(pt_1))
+    return focal_loss_fixed
+
+def lr_schedule(epoch):
+    lr = 1e-3
+    if epoch > 70:
+        lr *= 0.5e-3
+    elif epoch > 50:
+        lr *= 1e-3
+    elif epoch > 30:
+        lr *= 1e-2
+    elif epoch > 10:
+        lr *= 1e-1
+    return lr
+
 def train_and_evaluate(X, y, unique_labels, n_splits=5):
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    fold_var = 1
+    num_classes = len(unique_labels)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     
-    for train_index, val_index in kf.split(X):
+    for fold, (train_index, val_index) in enumerate(skf.split(X, np.argmax(y, axis=1)), 1):
         X_train, X_val = X[train_index], X[val_index]
         y_train, y_val = y[train_index], y[val_index]
         
-        model = create_1d_cnn_model((X.shape[1], 1), y.shape[1])
-        model.compile(optimizer=Adam(learning_rate=0.001),
-                      loss='categorical_crossentropy',
+        # Data augmentation
+        X_train, y_train = augment_data(X_train, y_train)
+        
+        model = create_model((X_train.shape[1], X_train.shape[2]), num_classes)
+        
+        optimizer = Adam(learning_rate=1e-3)
+        model.compile(optimizer=optimizer,
+                      loss=focal_loss(gamma=2, alpha=0.25),
                       metrics=['accuracy'])
         
-        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=0.00001)
+        early_stopping = EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True)
+        lr_scheduler = LearningRateScheduler(lr_schedule)
+        tensorboard = TensorBoard(log_dir=os.path.join(project_root, 'logs', f'fold_{fold}'))
         
         history = model.fit(X_train, y_train, 
-                            epochs=50, 
-                            batch_size=32, 
+                            epochs=100, 
+                            batch_size=128, 
                             validation_data=(X_val, y_val),
-                            callbacks=[early_stopping, reduce_lr],
+                            callbacks=[early_stopping, lr_scheduler, tensorboard],
                             verbose=1)
         
-        # Evaluate the model
         val_loss, val_accuracy = model.evaluate(X_val, y_val, verbose=0)
-        print(f'Fold {fold_var} - Validation Accuracy: {val_accuracy:.4f}')
+        print(f'Fold {fold} - Validation Accuracy: {val_accuracy:.4f}')
         
-        # Generate classification report
         y_pred = model.predict(X_val)
         y_pred_classes = np.argmax(y_pred, axis=1)
         y_true_classes = np.argmax(y_val, axis=1)
-        print(classification_report(y_true_classes, y_pred_classes, target_names=unique_labels))
+        print(classification_report(y_true_classes, y_pred_classes, target_names=unique_labels, zero_division=1))
         
-        # Plot confusion matrix
         cm = confusion_matrix(y_true_classes, y_pred_classes)
         plt.figure(figsize=(10, 8))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-        plt.title(f'Confusion Matrix - Fold {fold_var}')
+        plt.title(f'Confusion Matrix - Fold {fold}')
         plt.ylabel('True Label')
         plt.xlabel('Predicted Label')
-        plt.savefig(os.path.join(project_root, 'models', f'confusion_matrix_fold_{fold_var}.png'))
+        plt.savefig(os.path.join(project_root, 'models', f'confusion_matrix_fold_{fold}.png'))
         plt.close()
         
-        fold_var += 1
-
-def visualize_spectrograms(X, y, num_samples=5):
-    unique_labels = np.unique(y)
-    fig, axes = plt.subplots(len(unique_labels), num_samples, figsize=(20, 4*len(unique_labels)))
-    
-    for i, label in enumerate(unique_labels):
-        label_indices = np.where(y == label)[0]
-        samples = np.random.choice(label_indices, min(num_samples, len(label_indices)), replace=False)
+        # Plot training history
+        plt.figure(figsize=(12, 4))
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['loss'], label='Train Loss')
+        plt.plot(history.history['val_loss'], label='Validation Loss')
+        plt.title('Model Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
         
-        for j, sample_idx in enumerate(samples):
-            spectrogram = X[sample_idx]
-            if len(unique_labels) > 1:
-                ax = axes[i, j]
-            else:
-                ax = axes[j]
-            ax.imshow(spectrogram, aspect='auto', origin='lower')
-            ax.set_title(f"{label} - Sample {j+1}")
-            ax.axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(project_root, 'models', 'spectrogram_samples.png'))
-    plt.close()
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history['accuracy'], label='Train Accuracy')
+        plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+        plt.title('Model Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(project_root, 'models', f'training_history_fold_{fold}.png'))
+        plt.close()
 
 def main():
     data_dir = os.path.join(project_root, 'data', 'processed')
     
-    # Load and preprocess data
-    print("Loading and preprocessing data...")
+    print("Loading data...")
     X, y = load_data(data_dir)
     
-    # Check data consistency
-    X, y = check_data_consistency(X, y)
-    
-    # Visualize spectrograms
-    visualize_spectrograms(X, y)
-    
-    X = extract_features(X)
-    X, y, unique_labels = preprocess_data(X, y)
+    print("Preprocessing data...")
+    unique_labels = np.unique(y)
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    y = np.array([label_to_int[label] for label in y])
+    y = to_categorical(y)
     
     print("Class distribution:")
     for i, label in enumerate(unique_labels):
         count = np.sum(np.argmax(y, axis=1) == i)
         print(f"{label}: {count} samples")
     
-    # Train and evaluate model
     print("Training and evaluating model...")
     train_and_evaluate(X, y, unique_labels)
 
