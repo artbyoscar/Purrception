@@ -23,13 +23,24 @@ def load_data(data_dir):
     X_val = np.load(os.path.join(data_dir, 'val', 'val_spectrograms.npy'))
     y_val = np.load(os.path.join(data_dir, 'val', 'val_labels.npy'), allow_pickle=True)
     
+    print(f"Train data shapes: X_train: {X_train.shape}, y_train: {y_train.shape}")
+    print(f"Validation data shapes: X_val: {X_val.shape}, y_val: {y_val.shape}")
+    
     X = np.concatenate((X_train, X_val), axis=0)
     y = np.concatenate((y_train, y_val), axis=0)
     
-    print(f"Loaded data shapes: X: {X.shape}, y: {y.shape}")
+    print(f"Combined data shapes: X: {X.shape}, y: {y.shape}")
     print(f"X min: {X.min()}, X max: {X.max()}")
     print(f"Unique labels: {np.unique(y)}")
     
+    return X, y
+
+def check_data_consistency(X, y):
+    if len(X) != len(y):
+        print(f"Warning: Number of samples in X ({len(X)}) does not match number of labels in y ({len(y)})")
+        # Truncate y to match X
+        y = y[:len(X)]
+        print(f"Truncated y to match X. New shapes: X: {X.shape}, y: {y.shape}")
     return X, y
 
 def extract_features(X):
@@ -143,13 +154,17 @@ def visualize_spectrograms(X, y, num_samples=5):
     
     for i, label in enumerate(unique_labels):
         label_indices = np.where(y == label)[0]
-        samples = np.random.choice(label_indices, num_samples, replace=False)
+        samples = np.random.choice(label_indices, min(num_samples, len(label_indices)), replace=False)
         
         for j, sample_idx in enumerate(samples):
             spectrogram = X[sample_idx]
-            axes[i, j].imshow(spectrogram, aspect='auto', origin='lower')
-            axes[i, j].set_title(f"{label} - Sample {j+1}")
-            axes[i, j].axis('off')
+            if len(unique_labels) > 1:
+                ax = axes[i, j]
+            else:
+                ax = axes[j]
+            ax.imshow(spectrogram, aspect='auto', origin='lower')
+            ax.set_title(f"{label} - Sample {j+1}")
+            ax.axis('off')
     
     plt.tight_layout()
     plt.savefig(os.path.join(project_root, 'models', 'spectrogram_samples.png'))
@@ -161,6 +176,9 @@ def main():
     # Load and preprocess data
     print("Loading and preprocessing data...")
     X, y = load_data(data_dir)
+    
+    # Check data consistency
+    X, y = check_data_consistency(X, y)
     
     # Visualize spectrograms
     visualize_spectrograms(X, y)
